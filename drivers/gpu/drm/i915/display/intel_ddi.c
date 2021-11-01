@@ -2463,6 +2463,15 @@ static void intel_ddi_power_up_lanes(struct intel_encoder *encoder,
 	}
 }
 
+/* Splitter enable for eDP MSO is limited to certain pipes. */
+static u8 intel_ddi_splitter_pipe_mask(struct drm_i915_private *i915)
+{
+	if (IS_ALDERLAKE_P(i915))
+		return BIT(PIPE_A) | BIT(PIPE_B);
+	else
+		return BIT(PIPE_A);
+}
+
 static void intel_ddi_mso_get_config(struct intel_encoder *encoder,
 				     struct intel_crtc_state *pipe_config)
 {
@@ -2480,8 +2489,7 @@ static void intel_ddi_mso_get_config(struct intel_encoder *encoder,
 	if (!pipe_config->splitter.enable)
 		return;
 
-	/* Splitter enable is supported for pipe A only. */
-	if (drm_WARN_ON(&i915->drm, pipe != PIPE_A)) {
+	if (drm_WARN_ON(&i915->drm, !(intel_ddi_splitter_pipe_mask(i915) & BIT(pipe)))) {
 		pipe_config->splitter.enable = false;
 		return;
 	}
@@ -2513,10 +2521,6 @@ static void intel_ddi_mso_configure(const struct intel_crtc_state *crtc_state)
 		return;
 
 	if (crtc_state->splitter.enable) {
-		/* Splitter enable is supported for pipe A only. */
-		if (drm_WARN_ON(&i915->drm, pipe != PIPE_A))
-			return;
-
 		dss1 |= SPLITTER_ENABLE;
 		dss1 |= OVERLAP_PIXELS(crtc_state->splitter.pixel_overlap);
 		if (crtc_state->splitter.link_count == 2)
@@ -3895,7 +3899,13 @@ void hsw_ddi_get_config(struct intel_encoder *encoder,
 static void intel_ddi_sync_state(struct intel_encoder *encoder,
 				 const struct intel_crtc_state *crtc_state)
 {
-	if (intel_crtc_has_dp_encoder(crtc_state))
+	struct drm_i915_private *i915 = to_i915(encoder->base.dev);
+	enum phy phy = intel_port_to_phy(i915, encoder->port);
+
+	if (intel_phy_is_tc(i915, phy))
+		intel_tc_port_sanitize(enc_to_dig_port(encoder));
+
+	if (crtc_state && intel_crtc_has_dp_encoder(crtc_state))
 		intel_dp_sync_state(encoder, crtc_state);
 }
 
@@ -4743,12 +4753,8 @@ void intel_ddi_init(struct drm_i915_private *dev_priv, enum port port)
 
 		dig_port->hpd_pulse = intel_dp_hpd_pulse;
 
-		/* Splitter enable for eDP MSO is limited to certain pipes. */
-		if (dig_port->dp.mso_link_count) {
-			encoder->pipe_mask = BIT(PIPE_A);
-			if (IS_ALDERLAKE_P(dev_priv))
-				encoder->pipe_mask |= BIT(PIPE_B);
-		}
+		if (dig_port->dp.mso_link_count)
+			encoder->pipe_mask = intel_ddi_splitter_pipe_mask(dev_priv);
 	}
 
 	/* In theory we don't need the encoder->type check, but leave it just in

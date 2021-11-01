@@ -13,8 +13,8 @@
 #endif
 
 #define MLX5_MAX_IRQ_NAME (32)
-/* max irq_index is 255. three chars */
-#define MLX5_MAX_IRQ_IDX_CHARS (3)
+/* max irq_index is 2047, so four chars */
+#define MLX5_MAX_IRQ_IDX_CHARS (4)
 
 #define MLX5_SFS_PER_CTRL_IRQ 64
 #define MLX5_IRQ_CTRL_SF_MAX 8
@@ -214,6 +214,7 @@ static struct mlx5_irq *irq_request(struct mlx5_irq_pool *pool, int i)
 		err = -ENOMEM;
 		goto err_cpumask;
 	}
+	irq->pool = pool;
 	kref_init(&irq->kref);
 	irq->index = i;
 	err = xa_err(xa_store(&pool->irqs, irq->index, irq, GFP_KERNEL));
@@ -222,7 +223,6 @@ static struct mlx5_irq *irq_request(struct mlx5_irq_pool *pool, int i)
 			      irq->index, err);
 		goto err_xa;
 	}
-	irq->pool = pool;
 	return irq;
 err_xa:
 	free_cpumask_var(irq->mask);
@@ -251,8 +251,11 @@ int mlx5_irq_attach_nb(struct mlx5_irq *irq, struct notifier_block *nb)
 
 int mlx5_irq_detach_nb(struct mlx5_irq *irq, struct notifier_block *nb)
 {
+	int err = 0;
+
+	err = atomic_notifier_chain_unregister(&irq->nh, nb);
 	irq_put(irq);
-	return atomic_notifier_chain_unregister(&irq->nh, nb);
+	return err;
 }
 
 struct cpumask *mlx5_irq_get_affinity_mask(struct mlx5_irq *irq)
@@ -437,6 +440,7 @@ irq_pool_alloc(struct mlx5_core_dev *dev, int start, int size, char *name,
 	if (!pool)
 		return ERR_PTR(-ENOMEM);
 	pool->dev = dev;
+	mutex_init(&pool->lock);
 	xa_init_flags(&pool->irqs, XA_FLAGS_ALLOC);
 	pool->xa_num_irqs.min = start;
 	pool->xa_num_irqs.max = start + size - 1;
@@ -445,7 +449,6 @@ irq_pool_alloc(struct mlx5_core_dev *dev, int start, int size, char *name,
 			 name);
 	pool->min_threshold = min_threshold * MLX5_EQ_REFS_PER_IRQ;
 	pool->max_threshold = max_threshold * MLX5_EQ_REFS_PER_IRQ;
-	mutex_init(&pool->lock);
 	mlx5_core_dbg(dev, "pool->name = %s, pool->size = %d, pool->start = %d",
 		      name, size, start);
 	return pool;
@@ -459,6 +462,7 @@ static void irq_pool_free(struct mlx5_irq_pool *pool)
 	xa_for_each(&pool->irqs, index, irq)
 		irq_release(&irq->kref);
 	xa_destroy(&pool->irqs);
+	mutex_destroy(&pool->lock);
 	kvfree(pool);
 }
 
@@ -606,8 +610,9 @@ void mlx5_irq_table_destroy(struct mlx5_core_dev *dev)
 int mlx5_irq_table_get_sfs_vec(struct mlx5_irq_table *table)
 {
 	if (table->sf_comp_pool)
-		return table->sf_comp_pool->xa_num_irqs.max -
-			table->sf_comp_pool->xa_num_irqs.min + 1;
+		return min_t(int, num_online_cpus(),
+			     table->sf_comp_pool->xa_num_irqs.max -
+			     table->sf_comp_pool->xa_num_irqs.min + 1);
 	else
 		return mlx5_irq_table_get_num_comp(table);
 }

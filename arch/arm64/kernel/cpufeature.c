@@ -81,6 +81,7 @@
 #include <asm/mmu_context.h>
 #include <asm/mte.h>
 #include <asm/processor.h>
+#include <asm/smp.h>
 #include <asm/sysreg.h>
 #include <asm/traps.h>
 #include <asm/virt.h>
@@ -1499,9 +1500,13 @@ static bool unmap_kernel_at_el0(const struct arm64_cpu_capabilities *entry,
 	/*
 	 * For reasons that aren't entirely clear, enabling KPTI on Cavium
 	 * ThunderX leads to apparent I-cache corruption of kernel text, which
-	 * ends as well as you might imagine. Don't even try.
+	 * ends as well as you might imagine. Don't even try. We cannot rely
+	 * on the cpus_have_*cap() helpers here to detect the CPU erratum
+	 * because cpucap detection order may change. However, since we know
+	 * affected CPUs are always in a homogeneous configuration, it is
+	 * safe to rely on this_cpu_has_cap() here.
 	 */
-	if (cpus_have_const_cap(ARM64_WORKAROUND_CAVIUM_27456)) {
+	if (this_cpu_has_cap(ARM64_WORKAROUND_CAVIUM_27456)) {
 		str = "ARM64_WORKAROUND_CAVIUM_27456";
 		__kpti_forced = -1;
 	}

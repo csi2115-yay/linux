@@ -619,6 +619,13 @@ struct amdgpu_video_codec_info {
 	u32 max_level;
 };
 
+#define codec_info_build(type, width, height, level) \
+			 .codec_type = type,\
+			 .max_width = width,\
+			 .max_height = height,\
+			 .max_pixels_per_frame = height * width,\
+			 .max_level = level,
+
 struct amdgpu_video_codecs {
 	const u32 codec_count;
 	const struct amdgpu_video_codec_info *codec_array;
@@ -750,7 +757,7 @@ enum amd_hw_ip_block_type {
 	MAX_HWIP
 };
 
-#define HWIP_MAX_INSTANCE	8
+#define HWIP_MAX_INSTANCE	10
 
 struct amd_powerplay {
 	void *pp_handle;
@@ -1075,6 +1082,7 @@ struct amdgpu_device {
 
 	bool                            no_hw_access;
 	struct pci_saved_state          *pci_state;
+	pci_channel_state_t		pci_channel_state;
 
 	struct amdgpu_reset_control     *reset_cntl;
 };

@@ -58,7 +58,7 @@ static void amd_stop_sensor_v2(struct amd_mp2_dev *privdata, u16 sensor_idx)
 	cmd_base.cmd_v2.sensor_id = sensor_idx;
 	cmd_base.cmd_v2.length  = 16;
 
-	writeq(0x0, privdata->mmio + AMD_C2P_MSG2);
+	writeq(0x0, privdata->mmio + AMD_C2P_MSG1);
 	writel(cmd_base.ul, privdata->mmio + AMD_C2P_MSG0);
 }
 
@@ -239,13 +239,13 @@ static int amd_mp2_pci_probe(struct pci_dev *pdev, const struct pci_device_id *i
 	if (!privdata->cl_data)
 		return -ENOMEM;
 
-	rc = devm_add_action_or_reset(&pdev->dev, amd_mp2_pci_remove, privdata);
+	mp2_select_ops(privdata);
+
+	rc = amd_sfh_hid_client_init(privdata);
 	if (rc)
 		return rc;
 
-	mp2_select_ops(privdata);
-
-	return amd_sfh_hid_client_init(privdata);
+	return devm_add_action_or_reset(&pdev->dev, amd_mp2_pci_remove, privdata);
 }
 
 static const struct pci_device_id amd_mp2_pci_tbl[] = {

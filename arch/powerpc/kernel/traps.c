@@ -341,10 +341,16 @@ static bool exception_common(int signr, struct pt_regs *regs, int code,
 		return false;
 	}
 
-	show_signal_msg(signr, regs, code, addr);
+	/*
+	 * Must not enable interrupts even for user-mode exception, because
+	 * this can be called from machine check, which may be a NMI or IRQ
+	 * which don't like interrupts being enabled. Could check for
+	 * in_hardirq || in_nmi perhaps, but there doesn't seem to be a good
+	 * reason why _exception() should enable irqs for an exception handler,
+	 * the handlers themselves do that directly.
+	 */
 
-	if (arch_irqs_disabled())
-		interrupt_cond_local_irq_enable(regs);
+	show_signal_msg(signr, regs, code, addr);
 
 	current->thread.trap_nr = code;
 
@@ -791,24 +797,22 @@ void die_mce(const char *str, struct pt_regs *regs, long err)
 	 * do_exit() checks for in_interrupt() and panics in that case, so
 	 * exit the irq/nmi before calling die.
 	 */
-	if (IS_ENABLED(CONFIG_PPC_BOOK3S_64))
-		irq_exit();
-	else
+	if (in_nmi())
 		nmi_exit();
+	else
+		irq_exit();
 	die(str, regs, err);
 }
 
 /*
- * BOOK3S_64 does not call this handler as a non-maskable interrupt
+ * BOOK3S_64 does not usually call this handler as a non-maskable interrupt
  * (it uses its own early real-mode handler to handle the MCE proper
  * and then raises irq_work to call this handler when interrupts are
- * enabled).
+ * enabled). The only time when this is not true is if the early handler
+ * is unrecoverable, then it does call this directly to try to get a
+ * message out.
  */
-#ifdef CONFIG_PPC_BOOK3S_64
-DEFINE_INTERRUPT_HANDLER_ASYNC(machine_check_exception)
-#else
-DEFINE_INTERRUPT_HANDLER_NMI(machine_check_exception)
-#endif
+static void __machine_check_exception(struct pt_regs *regs)
 {
 	int recover = 0;
 
@@ -842,12 +846,19 @@ bail:
 	/* Must die if the interrupt is not recoverable */
 	if (!(regs->msr & MSR_RI))
 		die_mce("Unrecoverable Machine check", regs, SIGBUS);
+}
 
 #ifdef CONFIG_PPC_BOOK3S_64
-	return;
-#else
-	return 0;
+DEFINE_INTERRUPT_HANDLER_ASYNC(machine_check_exception_async)
+{
+	__machine_check_exception(regs);
+}
 #endif
+DEFINE_INTERRUPT_HANDLER_NMI(machine_check_exception)
+{
+	__machine_check_exception(regs);
+
+	return 0;
 }
 
 DEFINE_INTERRUPT_HANDLER(SMIException) /* async? */
@@ -1104,7 +1115,7 @@ DEFINE_INTERRUPT_HANDLER(RunModeException)
 	_exception(SIGTRAP, regs, TRAP_UNK, 0);
 }
 
-DEFINE_INTERRUPT_HANDLER(single_step_exception)
+static void __single_step_exception(struct pt_regs *regs)
 {
 	clear_single_step(regs);
 	clear_br_trace(regs);
@@ -1121,6 +1132,11 @@ DEFINE_INTERRUPT_HANDLER(single_step_exception)
 	_exception(SIGTRAP, regs, TRAP_TRACE, regs->nip);
 }
 
+DEFINE_INTERRUPT_HANDLER(single_step_exception)
+{
+	__single_step_exception(regs);
+}
+
 /*
  * After we have successfully emulated an instruction, we have to
  * check if the instruction was being single-stepped, and if so,
@@ -1130,7 +1146,7 @@ DEFINE_INTERRUPT_HANDLER(single_step_exception)
 static void emulate_single_step(struct pt_regs *regs)
 {
 	if (single_stepping(regs))
-		single_step_exception(regs);
+		__single_step_exception(regs);
 }
 
 static inline int __parse_fpscr(unsigned long fpscr)

@@ -2406,6 +2406,8 @@ int cmd_stat(int argc, const char **argv)
 			goto out;
 		} else if (verbose)
 			iostat_list(evsel_list, &stat_config);
+		if (iostat_mode == IOSTAT_RUN && !target__has_cpu(&target))
+			target.system_wide = true;
 	}
 
 	if (add_default_attributes())
@@ -2444,9 +2446,6 @@ int cmd_stat(int argc, const char **argv)
 	}
 
 	evlist__check_cpu_maps(evsel_list);
-
-	if (perf_pmu__has_hybrid())
-		stat_config.no_merge = true;
 
 	/*
 	 * Initialize thread_map with comm names,

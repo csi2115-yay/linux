@@ -5985,7 +5985,8 @@ ftrace_graph_release(struct inode *inode, struct file *file)
 		 * infrastructure to do the synchronization, thus we must do it
 		 * ourselves.
 		 */
-		synchronize_rcu_tasks_rude();
+		if (old_hash != EMPTY_HASH)
+			synchronize_rcu_tasks_rude();
 
 		free_ftrace_hash(old_hash);
 	}
@@ -6976,7 +6977,7 @@ __ftrace_ops_list_func(unsigned long ip, unsigned long parent_ip,
 	struct ftrace_ops *op;
 	int bit;
 
-	bit = trace_test_and_set_recursion(ip, parent_ip, TRACE_LIST_START, TRACE_LIST_MAX);
+	bit = trace_test_and_set_recursion(ip, parent_ip, TRACE_LIST_START);
 	if (bit < 0)
 		return;
 
@@ -7051,7 +7052,7 @@ static void ftrace_ops_assist_func(unsigned long ip, unsigned long parent_ip,
 {
 	int bit;
 
-	bit = trace_test_and_set_recursion(ip, parent_ip, TRACE_LIST_START, TRACE_LIST_MAX);
+	bit = trace_test_and_set_recursion(ip, parent_ip, TRACE_LIST_START);
 	if (bit < 0)
 		return;
 
@@ -7544,7 +7545,7 @@ int ftrace_is_dead(void)
  */
 int register_ftrace_function(struct ftrace_ops *ops)
 {
-	int ret = -1;
+	int ret;
 
 	ftrace_ops_init(ops);
 

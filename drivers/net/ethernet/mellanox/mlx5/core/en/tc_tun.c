@@ -10,6 +10,8 @@
 #include "en_tc.h"
 #include "rep/tc.h"
 #include "rep/neigh.h"
+#include "lag.h"
+#include "lag_mp.h"
 
 struct mlx5e_tc_tun_route_attr {
 	struct net_device *out_dev;
@@ -123,6 +125,11 @@ static int mlx5e_route_lookup_ipv4_get(struct mlx5e_priv *priv,
 	rt = ip_route_output_key(dev_net(mirred_dev), &attr->fl.fl4);
 	if (IS_ERR(rt))
 		return PTR_ERR(rt);
+
+	if (rt->rt_type != RTN_UNICAST) {
+		ret = -ENETUNREACH;
+		goto err_rt_release;
+	}
 
 	if (mlx5_lag_is_multipath(mdev) && rt->rt_gw_family != AF_INET) {
 		ret = -ENETUNREACH;

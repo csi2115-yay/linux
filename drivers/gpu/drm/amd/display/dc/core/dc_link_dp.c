@@ -1620,10 +1620,11 @@ enum dc_status dpcd_configure_lttpr_mode(struct dc_link *link, struct link_train
 {
 	enum dc_status status = DC_OK;
 
-	if (lt_settings->lttpr_mode == LTTPR_MODE_NON_TRANSPARENT)
-		status = configure_lttpr_mode_non_transparent(link, lt_settings);
-	else
+	if (lt_settings->lttpr_mode == LTTPR_MODE_TRANSPARENT)
 		status = configure_lttpr_mode_transparent(link);
+
+	else if (lt_settings->lttpr_mode == LTTPR_MODE_NON_TRANSPARENT)
+		status = configure_lttpr_mode_non_transparent(link, lt_settings);
 
 	return status;
 }
@@ -1784,7 +1785,6 @@ bool perform_link_training_with_retries(
 		link_enc = stream->link_enc;
 	else
 		link_enc = link->link_enc;
-	ASSERT(link_enc);
 
 	/* We need to do this before the link training to ensure the idle pattern in SST
 	 * mode will be sent right after the link training
@@ -1813,15 +1813,13 @@ bool perform_link_training_with_retries(
 		if (panel_mode == DP_PANEL_MODE_EDP) {
 			struct cp_psp *cp_psp = &stream->ctx->cp_psp;
 
-			if (cp_psp && cp_psp->funcs.enable_assr) {
-				if (!cp_psp->funcs.enable_assr(cp_psp->handle, link)) {
-					/* since eDP implies ASSR on, change panel
-					 * mode to disable ASSR
-					 */
-					panel_mode = DP_PANEL_MODE_DEFAULT;
-				}
-			} else
-				panel_mode = DP_PANEL_MODE_DEFAULT;
+			if (cp_psp && cp_psp->funcs.enable_assr)
+				/* ASSR is bound to fail with unsigned PSP
+				 * verstage used during devlopment phase.
+				 * Report and continue with eDP panel mode to
+				 * perform eDP link training with right settings
+				 */
+				cp_psp->funcs.enable_assr(cp_psp->handle, link);
 		}
 #endif
 
@@ -1850,9 +1848,13 @@ bool perform_link_training_with_retries(
 		dp_disable_link_phy(link, signal);
 
 		/* Abort link training if failure due to sink being unplugged. */
-		if (status == LINK_TRAINING_ABORT)
-			break;
-		else if (do_fallback) {
+		if (status == LINK_TRAINING_ABORT) {
+			enum dc_connection_type type = dc_connection_none;
+
+			dc_link_detect_sink(link, &type);
+			if (type == dc_connection_none)
+				break;
+		} else if (do_fallback) {
 			decide_fallback_link_setting(*link_setting, &current_setting, status);
 			/* Fail link training if reduced link bandwidth no longer meets
 			 * stream requirements.
@@ -3603,29 +3605,12 @@ static bool dpcd_read_sink_ext_caps(struct dc_link *link)
 bool dp_retrieve_lttpr_cap(struct dc_link *link)
 {
 	uint8_t lttpr_dpcd_data[6];
-	bool vbios_lttpr_enable = false;
-	bool vbios_lttpr_interop = false;
-	struct dc_bios *bios = link->dc->ctx->dc_bios;
+	bool vbios_lttpr_enable = link->dc->caps.vbios_lttpr_enable;
+	bool vbios_lttpr_interop = link->dc->caps.vbios_lttpr_aware;
 	enum dc_status status = DC_ERROR_UNEXPECTED;
 	bool is_lttpr_present = false;
 
 	memset(lttpr_dpcd_data, '\0', sizeof(lttpr_dpcd_data));
-	/* Query BIOS to determine if LTTPR functionality is forced on by system */
-	if (bios->funcs->get_lttpr_caps) {
-		enum bp_result bp_query_result;
-		uint8_t is_vbios_lttpr_enable = 0;
-
-		bp_query_result = bios->funcs->get_lttpr_caps(bios, &is_vbios_lttpr_enable);
-		vbios_lttpr_enable = (bp_query_result == BP_RESULT_OK) && !!is_vbios_lttpr_enable;
-	}
-
-	if (bios->funcs->get_lttpr_interop) {
-		enum bp_result bp_query_result;
-		uint8_t is_vbios_interop_enabled = 0;
-
-		bp_query_result = bios->funcs->get_lttpr_interop(bios, &is_vbios_interop_enabled);
-		vbios_lttpr_interop = (bp_query_result == BP_RESULT_OK) && !!is_vbios_interop_enabled;
-	}
 
 	/*
 	 * Logic to determine LTTPR mode
@@ -4650,7 +4635,10 @@ enum dp_panel_mode dp_get_panel_mode(struct dc_link *link)
 		}
 	}
 
-	if (link->dpcd_caps.panel_mode_edp) {
+	if (link->dpcd_caps.panel_mode_edp &&
+		(link->connector_signal == SIGNAL_TYPE_EDP ||
+		 (link->connector_signal == SIGNAL_TYPE_DISPLAY_PORT &&
+		  link->is_internal_display))) {
 		return DP_PANEL_MODE_EDP;
 	}
 
@@ -4914,9 +4902,7 @@ bool dc_link_set_default_brightness_aux(struct dc_link *link)
 {
 	uint32_t default_backlight;
 
-	if (link &&
-		(link->dpcd_sink_ext_caps.bits.hdr_aux_backlight_control == 1 ||
-		link->dpcd_sink_ext_caps.bits.sdr_aux_backlight_control == 1)) {
+	if (link && link->dpcd_sink_ext_caps.bits.oled == 1) {
 		if (!dc_link_read_default_bl_aux(link, &default_backlight))
 			default_backlight = 150000;
 		// if < 5 nits or > 5000, it might be wrong readback

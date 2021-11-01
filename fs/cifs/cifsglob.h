@@ -75,6 +75,9 @@
 #define SMB_ECHO_INTERVAL_MAX 600
 #define SMB_ECHO_INTERVAL_DEFAULT 60
 
+/* dns resolution interval in seconds */
+#define SMB_DNS_RESOLVE_INTERVAL_DEFAULT 600
+
 /* maximum number of PDUs in one compound */
 #define MAX_COMPOUND 5
 
@@ -646,6 +649,7 @@ struct TCP_Server_Info {
 	/* point to the SMBD connection if RDMA is used instead of socket */
 	struct smbd_connection *smbd_conn;
 	struct delayed_work	echo; /* echo ping workqueue job */
+	struct delayed_work	resolve; /* dns resolution workqueue job */
 	char	*smallbuf;	/* pointer to current "small" buffer */
 	char	*bigbuf;	/* pointer to current "big" buffer */
 	/* Total size of this PDU. Only valid from cifs_demultiplex_thread */
@@ -688,6 +692,9 @@ struct TCP_Server_Info {
 #ifdef CONFIG_CIFS_SWN_UPCALL
 	bool use_swn_dstaddr;
 	struct sockaddr_storage swn_dstaddr;
+#endif
+#ifdef CONFIG_CIFS_DFS_UPCALL
+	bool is_dfs_conn; /* if a dfs connection */
 #endif
 };
 
@@ -1396,6 +1403,7 @@ struct cifsInodeInfo {
 #define CIFS_INO_INVALID_MAPPING	  (4) /* pagecache is invalid */
 #define CIFS_INO_LOCK			  (5) /* lock bit for synchronization */
 #define CIFS_INO_MODIFIED_ATTR            (6) /* Indicate change in mtime/ctime */
+#define CIFS_INO_CLOSE_ON_LOCK            (7) /* Not to defer the close when lock is set */
 	unsigned long flags;
 	spinlock_t writers_lock;
 	unsigned int writers;		/* Number of writers on this inode */
@@ -1602,6 +1610,11 @@ struct dfs_info3_param {
 	char *path_name;
 	char *node_name;
 	int ttl;
+};
+
+struct file_list {
+	struct list_head list;
+	struct cifsFileInfo *cfile;
 };
 
 /*

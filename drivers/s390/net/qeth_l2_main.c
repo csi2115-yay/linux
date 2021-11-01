@@ -279,7 +279,7 @@ static void qeth_l2_set_pnso_mode(struct qeth_card *card,
 
 static void qeth_l2_dev2br_fdb_flush(struct qeth_card *card)
 {
-	struct switchdev_notifier_fdb_info info;
+	struct switchdev_notifier_fdb_info info = {};
 
 	QETH_CARD_TEXT(card, 2, "fdbflush");
 
@@ -679,7 +679,7 @@ static void qeth_l2_dev2br_fdb_notify(struct qeth_card *card, u8 code,
 				      struct net_if_token *token,
 				      struct mac_addr_lnid *addr_lnid)
 {
-	struct switchdev_notifier_fdb_info info;
+	struct switchdev_notifier_fdb_info info = {};
 	u8 ntfy_mac[ETH_ALEN];
 
 	ether_addr_copy(ntfy_mac, addr_lnid->mac);
@@ -2218,7 +2218,6 @@ static void qeth_l2_remove_device(struct ccwgroup_device *gdev)
 	if (gdev->state == CCWGROUP_ONLINE)
 		qeth_set_offline(card, card->discipline, false);
 
-	cancel_work_sync(&card->close_dev_work);
 	if (card->dev->reg_state == NETREG_REGISTERED)
 		unregister_netdev(card->dev);
 }

@@ -451,13 +451,23 @@ parse_lfp_backlight(struct drm_i915_private *i915,
 	}
 
 	i915->vbt.backlight.type = INTEL_BACKLIGHT_DISPLAY_DDI;
-	if (bdb->version >= 191 &&
-	    get_blocksize(backlight_data) >= sizeof(*backlight_data)) {
-		const struct lfp_backlight_control_method *method;
+	if (bdb->version >= 191) {
+		size_t exp_size;
 
-		method = &backlight_data->backlight_control[panel_type];
-		i915->vbt.backlight.type = method->type;
-		i915->vbt.backlight.controller = method->controller;
+		if (bdb->version >= 236)
+			exp_size = sizeof(struct bdb_lfp_backlight_data);
+		else if (bdb->version >= 234)
+			exp_size = EXP_BDB_LFP_BL_DATA_SIZE_REV_234;
+		else
+			exp_size = EXP_BDB_LFP_BL_DATA_SIZE_REV_191;
+
+		if (get_blocksize(backlight_data) >= exp_size) {
+			const struct lfp_backlight_control_method *method;
+
+			method = &backlight_data->backlight_control[panel_type];
+			i915->vbt.backlight.type = method->type;
+			i915->vbt.backlight.controller = method->controller;
+		}
 	}
 
 	i915->vbt.backlight.pwm_freq_hz = entry->pwm_freq_hz;
@@ -2166,7 +2176,8 @@ static void
 init_vbt_missing_defaults(struct drm_i915_private *i915)
 {
 	enum port port;
-	int ports = PORT_A | PORT_B | PORT_C | PORT_D | PORT_E | PORT_F;
+	int ports = BIT(PORT_A) | BIT(PORT_B) | BIT(PORT_C) |
+		    BIT(PORT_D) | BIT(PORT_E) | BIT(PORT_F);
 
 	if (!HAS_DDI(i915) && !IS_CHERRYVIEW(i915))
 		return;

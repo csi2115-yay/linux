@@ -163,15 +163,15 @@ const struct _kvm_stats_desc kvm_vcpu_stats_desc[] = {
 	STATS_DESC_COUNTER(VCPU, instruction_sigp_init_cpu_reset),
 	STATS_DESC_COUNTER(VCPU, instruction_sigp_cpu_reset),
 	STATS_DESC_COUNTER(VCPU, instruction_sigp_unknown),
-	STATS_DESC_COUNTER(VCPU, diagnose_10),
-	STATS_DESC_COUNTER(VCPU, diagnose_44),
-	STATS_DESC_COUNTER(VCPU, diagnose_9c),
-	STATS_DESC_COUNTER(VCPU, diagnose_9c_ignored),
-	STATS_DESC_COUNTER(VCPU, diagnose_9c_forward),
-	STATS_DESC_COUNTER(VCPU, diagnose_258),
-	STATS_DESC_COUNTER(VCPU, diagnose_308),
-	STATS_DESC_COUNTER(VCPU, diagnose_500),
-	STATS_DESC_COUNTER(VCPU, diagnose_other),
+	STATS_DESC_COUNTER(VCPU, instruction_diagnose_10),
+	STATS_DESC_COUNTER(VCPU, instruction_diagnose_44),
+	STATS_DESC_COUNTER(VCPU, instruction_diagnose_9c),
+	STATS_DESC_COUNTER(VCPU, diag_9c_ignored),
+	STATS_DESC_COUNTER(VCPU, diag_9c_forward),
+	STATS_DESC_COUNTER(VCPU, instruction_diagnose_258),
+	STATS_DESC_COUNTER(VCPU, instruction_diagnose_308),
+	STATS_DESC_COUNTER(VCPU, instruction_diagnose_500),
+	STATS_DESC_COUNTER(VCPU, instruction_diagnose_other),
 	STATS_DESC_COUNTER(VCPU, pfault_sync)
 };
 static_assert(ARRAY_SIZE(kvm_vcpu_stats_desc) ==
@@ -4044,7 +4044,7 @@ static int vcpu_pre_run(struct kvm_vcpu *vcpu)
 		kvm_s390_patch_guest_per_regs(vcpu);
 	}
 
-	clear_bit(vcpu->vcpu_id, vcpu->kvm->arch.gisa_int.kicked_mask);
+	clear_bit(kvm_vcpu_get_idx(vcpu), vcpu->kvm->arch.gisa_int.kicked_mask);
 
 	vcpu->arch.sie_block->icptcode = 0;
 	cpuflags = atomic_read(&vcpu->arch.sie_block->cpuflags);

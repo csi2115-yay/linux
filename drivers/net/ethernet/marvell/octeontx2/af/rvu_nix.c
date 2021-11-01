@@ -25,7 +25,7 @@ static int nix_update_mce_rule(struct rvu *rvu, u16 pcifunc,
 			       int type, bool add);
 static int nix_setup_ipolicers(struct rvu *rvu,
 			       struct nix_hw *nix_hw, int blkaddr);
-static void nix_ipolicer_freemem(struct nix_hw *nix_hw);
+static void nix_ipolicer_freemem(struct rvu *rvu, struct nix_hw *nix_hw);
 static int nix_verify_bandprof(struct nix_cn10k_aq_enq_req *req,
 			       struct nix_hw *nix_hw, u16 pcifunc);
 static int nix_free_all_bandprof(struct rvu *rvu, u16 pcifunc);
@@ -196,11 +196,22 @@ static void nix_rx_sync(struct rvu *rvu, int blkaddr)
 {
 	int err;
 
-	/*Sync all in flight RX packets to LLC/DRAM */
+	/* Sync all in flight RX packets to LLC/DRAM */
 	rvu_write64(rvu, blkaddr, NIX_AF_RX_SW_SYNC, BIT_ULL(0));
 	err = rvu_poll_reg(rvu, blkaddr, NIX_AF_RX_SW_SYNC, BIT_ULL(0), true);
 	if (err)
-		dev_err(rvu->dev, "NIX RX software sync failed\n");
+		dev_err(rvu->dev, "SYNC1: NIX RX software sync failed\n");
+
+	/* SW_SYNC ensures all existing transactions are finished and pkts
+	 * are written to LLC/DRAM, queues should be teared down after
+	 * successful SW_SYNC. Due to a HW errata, in some rare scenarios
+	 * an existing transaction might end after SW_SYNC operation. To
+	 * ensure operation is fully done, do the SW_SYNC twice.
+	 */
+	rvu_write64(rvu, blkaddr, NIX_AF_RX_SW_SYNC, BIT_ULL(0));
+	err = rvu_poll_reg(rvu, blkaddr, NIX_AF_RX_SW_SYNC, BIT_ULL(0), true);
+	if (err)
+		dev_err(rvu->dev, "SYNC2: NIX RX software sync failed\n");
 }
 
 static bool is_valid_txschq(struct rvu *rvu, int blkaddr,
@@ -238,9 +249,11 @@ static bool is_valid_txschq(struct rvu *rvu, int blkaddr,
 	return true;
 }
 
-static int nix_interface_init(struct rvu *rvu, u16 pcifunc, int type, int nixlf)
+static int nix_interface_init(struct rvu *rvu, u16 pcifunc, int type, int nixlf,
+			      struct nix_lf_alloc_rsp *rsp)
 {
 	struct rvu_pfvf *pfvf = rvu_get_pfvf(rvu, pcifunc);
+	struct rvu_hwinfo *hw = rvu->hw;
 	struct mac_ops *mac_ops;
 	int pkind, pf, vf, lbkid;
 	u8 cgx_id, lmac_id;
@@ -265,6 +278,8 @@ static int nix_interface_init(struct rvu *rvu, u16 pcifunc, int type, int nixlf)
 		pfvf->tx_chan_base = pfvf->rx_chan_base;
 		pfvf->rx_chan_cnt = 1;
 		pfvf->tx_chan_cnt = 1;
+		rsp->tx_link = cgx_id * hw->lmac_per_cgx + lmac_id;
+
 		cgx_set_pkind(rvu_cgx_pdata(cgx_id, rvu), lmac_id, pkind);
 		rvu_npc_set_pkind(rvu, pkind, pfvf);
 
@@ -298,6 +313,8 @@ static int nix_interface_init(struct rvu *rvu, u16 pcifunc, int type, int nixlf)
 					rvu_nix_chan_lbk(rvu, lbkid, vf + 1);
 		pfvf->rx_chan_cnt = 1;
 		pfvf->tx_chan_cnt = 1;
+		rsp->tx_link = hw->cgx_links + lbkid;
+		rvu_npc_set_pkind(rvu, NPC_RX_LBK_PKIND, pfvf);
 		rvu_npc_install_promisc_entry(rvu, pcifunc, nixlf,
 					      pfvf->rx_chan_base,
 					      pfvf->rx_chan_cnt);
@@ -346,6 +363,9 @@ static void nix_interface_deinit(struct rvu *rvu, u16 pcifunc, u8 nixlf)
 
 	/* Free and disable any MCAM entries used by this NIX LF */
 	rvu_npc_disable_mcam_entries(rvu, pcifunc, nixlf);
+
+	/* Disable DMAC filters used */
+	rvu_cgx_disable_dmac_entries(rvu, pcifunc);
 }
 
 int rvu_mbox_handler_nix_bp_disable(struct rvu *rvu,
@@ -1243,7 +1263,7 @@ int rvu_mbox_handler_nix_lf_alloc(struct rvu *rvu,
 	rvu_write64(rvu, blkaddr, NIX_AF_LFX_TX_PARSE_CFG(nixlf), cfg);
 
 	intf = is_afvf(pcifunc) ? NIX_INTF_TYPE_LBK : NIX_INTF_TYPE_CGX;
-	err = nix_interface_init(rvu, pcifunc, intf, nixlf);
+	err = nix_interface_init(rvu, pcifunc, intf, nixlf, rsp);
 	if (err)
 		goto free_mem;
 
@@ -1949,6 +1969,35 @@ static void nix_tl1_default_cfg(struct rvu *rvu, struct nix_hw *nix_hw,
 	pfvf_map[schq] = TXSCH_SET_FLAG(pfvf_map[schq], NIX_TXSCHQ_CFG_DONE);
 }
 
+static void rvu_nix_tx_tl2_cfg(struct rvu *rvu, int blkaddr,
+			       u16 pcifunc, struct nix_txsch *txsch)
+{
+	struct rvu_hwinfo *hw = rvu->hw;
+	int lbk_link_start, lbk_links;
+	u8 pf = rvu_get_pf(pcifunc);
+	int schq;
+
+	if (!is_pf_cgxmapped(rvu, pf))
+		return;
+
+	lbk_link_start = hw->cgx_links;
+
+	for (schq = 0; schq < txsch->schq.max; schq++) {
+		if (TXSCH_MAP_FUNC(txsch->pfvf_map[schq]) != pcifunc)
+			continue;
+		/* Enable all LBK links with channel 63 by default so that
+		 * packets can be sent to LBK with a NPC TX MCAM rule
+		 */
+		lbk_links = hw->lbk_links;
+		while (lbk_links--)
+			rvu_write64(rvu, blkaddr,
+				    NIX_AF_TL3_TL2X_LINKX_CFG(schq,
+							      lbk_link_start +
+							      lbk_links),
+				    BIT_ULL(12) | RVU_SWITCH_LBK_CHAN);
+	}
+}
+
 int rvu_mbox_handler_nix_txschq_cfg(struct rvu *rvu,
 				    struct nix_txschq_config *req,
 				    struct msg_rsp *rsp)
@@ -2036,6 +2085,9 @@ int rvu_mbox_handler_nix_txschq_cfg(struct rvu *rvu,
 		}
 		rvu_write64(rvu, blkaddr, reg, regval);
 	}
+
+	rvu_nix_tx_tl2_cfg(rvu, blkaddr, pcifunc,
+			   &nix_hw->txsch[NIX_TXSCH_LVL_TL2]);
 
 	return 0;
 }
@@ -3177,6 +3229,8 @@ int rvu_mbox_handler_nix_set_mac_addr(struct rvu *rvu,
 	if (test_bit(PF_SET_VF_TRUSTED, &pfvf->flags) && from_vf)
 		ether_addr_copy(pfvf->default_mac, req->mac_addr);
 
+	rvu_switch_update_rules(rvu, pcifunc);
+
 	return 0;
 }
 
@@ -3800,12 +3854,11 @@ static void rvu_nix_block_freemem(struct rvu *rvu, int blkaddr,
 			kfree(txsch->schq.bmap);
 		}
 
-		nix_ipolicer_freemem(nix_hw);
+		nix_ipolicer_freemem(rvu, nix_hw);
 
 		vlan = &nix_hw->txvlan;
 		kfree(vlan->rsrc.bmap);
 		mutex_destroy(&vlan->rsrc_lock);
-		devm_kfree(rvu->dev, vlan->entry2pfvf_map);
 
 		mcast = &nix_hw->mcast;
 		qmem_free(rvu->dev, mcast->mce_ctx);
@@ -3845,6 +3898,8 @@ int rvu_mbox_handler_nix_lf_start_rx(struct rvu *rvu, struct msg_req *req,
 
 	pfvf = rvu_get_pfvf(rvu, pcifunc);
 	set_bit(NIXLF_INITIALIZED, &pfvf->flags);
+
+	rvu_switch_update_rules(rvu, pcifunc);
 
 	return rvu_cgx_start_stop_io(rvu, pcifunc, true);
 }
@@ -4175,10 +4230,13 @@ static int nix_setup_ipolicers(struct rvu *rvu,
 	return 0;
 }
 
-static void nix_ipolicer_freemem(struct nix_hw *nix_hw)
+static void nix_ipolicer_freemem(struct rvu *rvu, struct nix_hw *nix_hw)
 {
 	struct nix_ipolicer *ipolicer;
 	int layer;
+
+	if (!rvu->hw->cap.ipolicer)
+		return;
 
 	for (layer = 0; layer < BAND_PROF_NUM_LAYERS; layer++) {
 		ipolicer = &nix_hw->ipolicer[layer];

@@ -196,6 +196,9 @@ struct otx2_hw {
 	u8			lso_udpv4_idx;
 	u8			lso_udpv6_idx;
 
+	/* RSS */
+	u8			flowkey_alg_idx;
+
 	/* MSI-X */
 	u8			cint_cnt; /* CQ interrupt count */
 	u16			npa_msixoff; /* Offset of NPA vectors */
@@ -212,14 +215,15 @@ struct otx2_hw {
 	u64			cgx_fec_uncorr_blks;
 	u8			cgx_links;  /* No. of CGX links present in HW */
 	u8			lbk_links;  /* No. of LBK links present in HW */
+	u8			tx_link;    /* Transmit channel link number */
 #define HW_TSO			0
 #define CN10K_MBOX		1
 #define CN10K_LMTST		2
 	unsigned long		cap_flag;
 
 #define LMT_LINE_SIZE		128
-#define NIX_LMTID_BASE		72 /* RX + TX + XDP */
-	void __iomem		*lmt_base;
+#define LMT_BURST_SIZE		32 /* 32 LMTST lines for burst SQE flush */
+	u64			*lmt_base;
 	u64			*npa_lmt_base;
 	u64			*nix_lmt_base;
 };
@@ -288,6 +292,9 @@ struct otx2_flow_config {
 	u16			tc_flower_offset;
 	u16                     ntuple_max_flows;
 	u16			tc_max_flows;
+	u8			dmacflt_max_flows;
+	u8			*bmap_to_dmacindex;
+	unsigned long		dmacflt_bmap;
 	struct list_head	flow_list;
 };
 
@@ -329,6 +336,7 @@ struct otx2_nic {
 #define OTX2_FLAG_TC_FLOWER_SUPPORT		BIT_ULL(11)
 #define OTX2_FLAG_TC_MATCHALL_EGRESS_ENABLED	BIT_ULL(12)
 #define OTX2_FLAG_TC_MATCHALL_INGRESS_ENABLED	BIT_ULL(13)
+#define OTX2_FLAG_DMACFLTR_SUPPORT		BIT_ULL(14)
 	u64			flags;
 
 	struct otx2_qset	qset;
@@ -363,8 +371,9 @@ struct otx2_nic {
 	/* Block address of NIX either BLKADDR_NIX0 or BLKADDR_NIX1 */
 	int			nix_blkaddr;
 	/* LMTST Lines info */
+	struct qmem		*dync_lmt;
 	u16			tot_lmt_lines;
-	u16			nix_lmt_lines;
+	u16			npa_lmt_lines;
 	u32			nix_lmt_size;
 
 	struct otx2_ptp		*ptp;
@@ -833,4 +842,11 @@ int otx2_init_tc(struct otx2_nic *nic);
 void otx2_shutdown_tc(struct otx2_nic *nic);
 int otx2_setup_tc(struct net_device *netdev, enum tc_setup_type type,
 		  void *type_data);
+/* CGX/RPM DMAC filters support */
+int otx2_dmacflt_get_max_cnt(struct otx2_nic *pf);
+int otx2_dmacflt_add(struct otx2_nic *pf, const u8 *mac, u8 bit_pos);
+int otx2_dmacflt_remove(struct otx2_nic *pf, const u8 *mac, u8 bit_pos);
+int otx2_dmacflt_update(struct otx2_nic *pf, u8 *mac, u8 bit_pos);
+void otx2_dmacflt_reinstall_flows(struct otx2_nic *pf);
+void otx2_dmacflt_update_pfmac_flow(struct otx2_nic *pfvf);
 #endif /* OTX2_COMMON_H */
